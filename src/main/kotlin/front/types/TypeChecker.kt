@@ -159,35 +159,47 @@ class TypeChecker(
             }
 
             is Binary -> {
-                when(e.op) {
+                val lt = typeOf(e.left)
+                val rt = typeOf(e.right)
+
+                val out: NamedType = when(e.op) {
                     BinOp.And, BinOp.Or -> {
-                        val lt = typeOf(e.left); val rt = typeOf(e.right)
                         if(lt.name != "bool" || rt.name != "bool") error(e.span, ErrorCode.LogicNeedsBool, e.op.name)
                         NamedType("bool", e.span)
                     }
 
                     BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge -> {
-                        val lt = typeOf(e.left); val rt = typeOf(e.right)
-                        if(lt.name != rt.name) error(e.span, ErrorCode.CompareTypeMismatch, lt.name, rt.name)
-                        if(e.op == BinOp.Eq || e.op == BinOp.Ne) return NamedType("bool", e.span)
-                        if(lt.name !in listOf("int", "float", "char")) error(e.span, ErrorCode.RelopTypeInvalid, e.op.name, lt.name)
+                        val okSame = lt.name == rt.name
+                        val okNumMix = setOf(lt.name, rt.name) == setOf("int", "float")
+                        val compTy = when {
+                            okSame -> lt.name
+                            okNumMix -> "float"
+                            else -> error(e.span, ErrorCode.CompareTypeMismatch, lt.name, rt.name)
+                        }
 
-                        NamedType("bool", e.span)
+                        if(e.op == BinOp.Eq || e.op == BinOp.Ne) NamedType("bool", e.span)
+                        else {
+                            if(compTy !in listOf("int", "float", "char")) error(e.span, ErrorCode.RelopTypeInvalid, e.op.name, compTy)
+                            NamedType("bool", e.span)
+                        }
                     }
 
                     else -> {
-                        val lt = typeOf(e.left); val rt = typeOf(e.right)
-                        if(lt.name != rt.name) error(e.span, ErrorCode.TypeMismatch, lt.name, rt.name)
-
-                        if(lt.name == "string") {
-                            if(e.op != BinOp.Add) error(e.span, ErrorCode.StringsOnlyAdd)
-                            return NamedType("string", e.span)
+                        if(e.op == BinOp.Add && (lt.name == "string" || rt.name == "string")) {
+                            NamedType("string", e.span)
+                        } else {
+                            val same = lt.name == rt.name
+                            val bothNum = lt.name in listOf("int", "float") && rt.name in listOf("int", "float")
+                            if(!same && !bothNum) error(e.span, ErrorCode.TypeMismatch, lt.name, rt.name)
+                            val resName = if (lt.name == "float" || rt.name == "float") "float" else lt.name
+                            if(resName !in listOf("int", "float")) error(e.span, ErrorCode.InvalidType, resName)
+                            NamedType(resName, e.span)
                         }
-
-                        if(lt.name !in listOf("int", "float")) error(e.span, ErrorCode.InvalidType, lt.name)
-                        lt
                     }
                 }
+
+                types.exprTypes[e] = out
+                out
             }
 
             is Call -> {
@@ -229,23 +241,37 @@ class TypeChecker(
             }
 
             is MethodCall -> {
-                if(e.args.isNotEmpty()) error(e.span, ErrorCode.UnsupportedConversion, "method ${e.method}", "no-args")
+                if (e.args.isNotEmpty()) error(e.span, ErrorCode.UnsupportedConversion, "method ${e.method}", "no-args")
 
                 val recvTy = typeOf(e.receiver)
-                when(e.method) {
+                val out: NamedType = when (e.method) {
                     "toString" -> NamedType("string", e.span)
-                    "toInt" -> when(recvTy.name) {
-                        "float", "string", "int", "char", "bool" -> NamedType("int", e.span)
+
+                    "toInt" -> when (recvTy.name) {
+                        "int", "float", "string", "char", "bool" -> NamedType("int", e.span)
                         else -> error(e.span, ErrorCode.UnsupportedConversion, recvTy.name, "int")
                     }
 
-                    "toFloat" -> when(recvTy.name) {
-                        "int", "string", "float", "char", "bool" -> NamedType("float", e.span)
+                    "toFloat" -> when (recvTy.name) {
+                        "float", "int", "string", "char", "bool" -> NamedType("float", e.span)
                         else -> error(e.span, ErrorCode.UnsupportedConversion, recvTy.name, "float")
+                    }
+
+                    "toBool" -> when (recvTy.name) {
+                        "bool", "int", "float", "char", "string" -> NamedType("bool", e.span)
+                        else -> error(e.span, ErrorCode.UnsupportedConversion, recvTy.name, "bool")
+                    }
+
+                    "toChar" -> when (recvTy.name) {
+                        "char", "int", "string", "bool", "float" -> NamedType("char", e.span)
+                        else -> error(e.span, ErrorCode.UnsupportedConversion, recvTy.name, "char")
                     }
 
                     else -> error(e.span, ErrorCode.UnknownMethod, e.method)
                 }
+
+                types.exprTypes[e] = out
+                out
             }
         }
 
