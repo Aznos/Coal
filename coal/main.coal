@@ -1,11 +1,12 @@
 fn main() {
-    var x = 0
-    var until = input("how many iterations? ")
+    println("Hello " + "world!")
 
-    while(x < until.toInt()) {
-        x += 1
-        println(x)
-    }
-
-    println("We're done!")
+    var x = 5
+    println("x = " + x.toString())
+    println(('A'.toInt()).toString())
+    println(65.toChar().toString())
+    println((1).toBool().toInt())
+    println((0).toBool().toInt())
+    println(("").toBool().toInt())
+    println(("hi").toBool().toInt())
 }

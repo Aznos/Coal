@@ -423,9 +423,15 @@ class LLVMEmitter(
             else -> ice("Expected string aggregate")
         }
 
+        fun stringLenOf(v: RValue): String = when(v) {
+            is RValue.Aggregate -> b.extractValue("{ ptr, i32 }", v.literal, 1)
+            is RValue.ValueReg  -> b.extractValue("{ ptr, i32 }", v.reg, 1)
+            else -> ice("Expected string aggregate")
+        }
+
         return when (m.method) {
-            "toString" -> when(recv) {
-                is RValue.Aggregate -> recv
+            "toString" -> when (recv) {
+                is RValue.Aggregate -> recv // already string
                 is RValue.Immediate, is RValue.ValueReg -> numberOrCharToString(b, recv)
             }
 
@@ -433,6 +439,29 @@ class LLVMEmitter(
                 (recv is RValue.Immediate && recv.llTy == "double") || (recv is RValue.ValueReg  && recv.llTy == "double") -> {
                     val i = b.fptosi("double", asOperand(recv).second, "i32")
                     RValue.ValueReg("i32", i)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "i8") || (recv is RValue.ValueReg  && recv.llTy == "i8") -> {
+                    val z = when(recv) {
+                        is RValue.Immediate -> recv.text
+                        is RValue.ValueReg -> {
+                            val t = b.zext("i8", recv.reg, "i32"); t
+                        }
+
+                        else -> ice("unreachable toInt char")
+                    }
+
+                    if(recv is RValue.Immediate) RValue.Immediate("i32", z) else RValue.ValueReg("i32", z)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "i1") || (recv is RValue.ValueReg  && recv.llTy == "i1") -> {
+                    val z = when(recv) {
+                        is RValue.Immediate -> recv.text
+                        is RValue.ValueReg  -> b.zext("i1", recv.reg, "i32")
+                        else -> ice("unreachable toInt bool")
+                    }
+
+                    if(recv is RValue.Immediate) RValue.Immediate("i32", z) else RValue.ValueReg("i32", z)
                 }
 
                 m.receiver is StringLit -> stringToIntIfLiteral(m.receiver)
@@ -443,12 +472,30 @@ class LLVMEmitter(
                     RValue.ValueReg("i32", r32)
                 }
 
+                (recv is RValue.Immediate && recv.llTy == "i32") || (recv is RValue.ValueReg  && recv.llTy == "i32") -> recv
                 else -> ice("toInt() recv type unsupported", m.span)
             }
 
             "toFloat" -> when {
-                (recv is RValue.Immediate && recv.llTy == "i32") || (recv is RValue.ValueReg  && recv.llTy == "i32") -> {
-                    val f = b.sitofp("i32", asOperand(recv).second, "double")
+                (recv is RValue.Immediate && recv.llTy in listOf("i32","i8","i1")) || (recv is RValue.ValueReg  && recv.llTy in listOf("i32","i8","i1")) -> {
+                    val asI32 = when(recv) {
+                        is RValue.Immediate -> when(recv.llTy) {
+                            "i32" -> recv.text
+                            "i8","i1" -> recv.text
+                            else -> ice("bad toFloat immediate")
+                        }
+
+                        is RValue.ValueReg -> when(recv.llTy) {
+                            "i32" -> recv.reg
+                            "i8"  -> b.zext("i8", recv.reg, "i32")
+                            "i1"  -> b.zext("i1", recv.reg, "i32")
+                            else -> ice("bad toFloat reg")
+                        }
+
+                        else -> ice("unreachable toFloat intlike")
+                    }
+
+                    val f = b.sitofp("i32", asI32, "double")
                     RValue.ValueReg("double", f)
                 }
 
@@ -459,7 +506,87 @@ class LLVMEmitter(
                     RValue.ValueReg("double", f)
                 }
 
+                (recv is RValue.Immediate && recv.llTy == "double") || (recv is RValue.ValueReg  && recv.llTy == "double") -> recv
                 else -> ice("toFloat() recv type unsupported", m.span)
+            }
+
+            "toBool" -> when {
+                (recv is RValue.Immediate && recv.llTy in listOf("i32","i8")) || (recv is RValue.ValueReg  && recv.llTy in listOf("i32","i8")) -> {
+                    val asI32 = when(recv) {
+                        is RValue.Immediate -> if(recv.llTy=="i32") recv.text else recv.text
+                        is RValue.ValueReg  -> if(recv.llTy=="i32") recv.reg else b.zext("i8", recv.reg, "i32")
+                        else -> ice("unreachable toBool int/char")
+                    }
+
+                    val nz = b.icmp("ne", "i32", asI32, "0")
+                    RValue.ValueReg("i1", nz)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "double") || (recv is RValue.ValueReg  && recv.llTy == "double") -> {
+                    val nz = b.fcmp("one", asOperand(recv).second, "0.0")
+                    RValue.ValueReg("i1", nz)
+                }
+
+                isStringLike(recv) -> {
+                    val len = stringLenOf(recv)
+                    val pos = b.icmp("sgt", "i32", len, "0")
+                    RValue.ValueReg("i1", pos)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "i1") || (recv is RValue.ValueReg  && recv.llTy == "i1") -> recv
+                else -> ice("toBool() recv type unsupported", m.span)
+            }
+
+            "toChar" -> when {
+                (recv is RValue.Immediate && recv.llTy == "i32") -> {
+                    val v8 = (asOperand(recv).second.toInt() and 0xFF).toString()
+                    RValue.Immediate("i8", v8)
+                }
+
+                (recv is RValue.ValueReg && recv.llTy == "i32") -> {
+                    val t = b.trunc("i32", recv.reg, "i8")
+                    RValue.ValueReg("i8", t)
+                }
+
+                (recv is RValue.ValueReg && recv.llTy == "i1") -> {
+                    val z = b.zext("i1", recv.reg, "i8")
+                    RValue.ValueReg("i8", z)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "i1") -> RValue.Immediate("i8", recv.text)
+                (recv is RValue.ValueReg && recv.llTy == "double") -> {
+                    val i = b.fptosi("double", recv.reg, "i32")
+                    val t = b.trunc("i32", i, "i8")
+                    RValue.ValueReg("i8", t)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "double") -> {
+                    val i = b.fptosi("double", recv.text, "i32")
+                    val t = b.trunc("i32", i, "i8")
+                    RValue.ValueReg("i8", t)
+                }
+
+                isStringLike(recv) -> {
+                    val p = stringPtrOf(recv)
+                    val len = stringLenOf(recv)
+                    val isEmpty = b.icmp("eq", "i32", len, "0")
+                    val L_take = fresh("tochar_take")
+                    val L_zero = fresh("tochar_zero")
+                    val L_join = fresh("tochar_join")
+                    b.brCond("i1", isEmpty, L_zero, L_take)
+                    val bt = b.nextBlock(L_take)
+                    val c32 = bt.zext("i8", bt.load("i8", p), "i32")
+                    bt.br(L_join)
+                    val bz = b.nextBlock(L_zero)
+                    bz.br(L_join)
+                    val bj = b.nextBlock(L_join)
+                    val cSel = bj.phi("i32", "0" to L_zero, c32 to L_take)
+                    val c8 = bj.trunc("i32", cSel, "i8")
+                    RValue.ValueReg("i8", c8)
+                }
+
+                (recv is RValue.Immediate && recv.llTy == "i8") || (recv is RValue.ValueReg  && recv.llTy == "i8") -> recv
+                else -> ice("toChar() recv type unsupported", m.span)
             }
 
             else -> ice("Unknown method: ${m.method}", m.span)
